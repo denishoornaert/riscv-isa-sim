@@ -46,6 +46,9 @@ riscv_install_hdrs = \
 	sim.h \
 	simif.h \
 	trap.h \
+	eviction_policies.h \
+	cachesim_addr.h \
+	cachesim_perf_counter.h \
 	triggers.h \
 	vector_unit.h \
 
@@ -79,6 +82,9 @@ riscv_srcs = \
 	socketif.cc \
 	cfg.cc \
 	$(riscv_gen_srcs) \
+	eviction_policies.cc \
+	cachesim_addr.cc \
+	cachesim_perf_counter.cc \
 
 riscv_test_srcs = \
   check-opcode-overlap.t.cc \

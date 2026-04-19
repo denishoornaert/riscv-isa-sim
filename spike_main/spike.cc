@@ -47,9 +47,9 @@ static void help(int exit_code = 1)
   fprintf(stderr, "  --priv=<m|mu|msu>     RISC-V privilege modes supported [default %s]\n", DEFAULT_PRIV);
   fprintf(stderr, "  --pc=<address>        Override ELF entry point\n");
   fprintf(stderr, "  --hartids=<a,b,...>   Explicitly specify hartids, default is 0,1,...\n");
-  fprintf(stderr, "  --ic=<S>:<W>:<B>      Instantiate a cache model with S sets,\n");
-  fprintf(stderr, "  --dc=<S>:<W>:<B>        W ways, and B-byte blocks (with S and\n");
-  fprintf(stderr, "  --l2=<S>:<W>:<B>        B both powers of 2).\n");
+  fprintf(stderr, "  --ic=<S>:<W>:<B>:<P>  Instantiate a cache model with S sets,\n");
+  fprintf(stderr, "  --dc=<S>:<W>:<B>:<P>  W ways, B-byte blocks (with S and B both powers of 2),\n");
+  fprintf(stderr, "  --l2=<S>:<W>:<B>:<P>  and an eviction policy P (e.g., lru, lfsr, fifo, lip, and bip).\n");
   fprintf(stderr, "  --big-endian          Use a big-endian memory system.\n");
   fprintf(stderr, "  --device=<name>       Attach MMIO plugin device from an --extlib library,\n");
   fprintf(stderr, "                          specify --device=<name>,<args> to pass down extra args.\n");
