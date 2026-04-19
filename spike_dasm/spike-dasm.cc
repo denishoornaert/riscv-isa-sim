@@ -8,16 +8,18 @@
 
 #include "disasm.h"
 #include "extension.h"
+#include "platform.h"
 #include <iostream>
 #include <string>
 #include <cstdint>
 #include <fesvr/option_parser.h>
 using namespace std;
 
-int main(int argc, char** argv)
+int main(int UNUSED argc, char** argv)
 {
   string s;
   const char* isa = DEFAULT_ISA;
+  bool strict = false;
 
   std::function<extension_t*()> extension;
   option_parser_t parser;
@@ -25,10 +27,11 @@ int main(int argc, char** argv)
   parser.option(0, "extension", 1, [&](const char* s){extension = find_extension(s);});
 #endif
   parser.option(0, "isa", 1, [&](const char* s){isa = s;});
+  parser.option(0, "strict", 0, [&](const char UNUSED *s){strict = true;});
   parser.parse(argv);
 
   isa_parser_t isa_parser(isa, DEFAULT_PRIV);
-  disassembler_t* disassembler = new disassembler_t(&isa_parser);
+  disassembler_t* disassembler = new disassembler_t(&isa_parser, strict);
   if (extension) {
     for (auto disasm_insn : extension()->get_disasms()) {
       disassembler->add_insn(disasm_insn);
@@ -50,13 +53,9 @@ int main(int argc, char** argv)
         continue;
 
       char* endp;
-      int64_t bits = strtoull(&s[pos], &endp, 16);
+      insn_bits_t bits = strtoull(&s[pos], &endp, 16);
       if (*endp != ')')
         continue;
-
-      size_t nbits = 4 * (endp - &s[pos]);
-      if (nbits < 64)
-        bits = bits << (64 - nbits) >> (64 - nbits);
 
       string dis = disassembler->disassemble(bits);
       s = s.substr(0, start) + dis + s.substr(endp - &s[0] + 1);

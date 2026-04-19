@@ -1,3 +1,2 @@
-require_extension('C');
-require(insn.rvc_rs2() != 0);
+require_extension(EXT_ZCA);
 WRITE_RD(RVC_RS2);

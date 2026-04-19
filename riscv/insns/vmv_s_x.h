@@ -8,7 +8,7 @@ if (vl > 0 && P.VU.vstart->read() < vl) {
   reg_t rd_num = insn.rd();
   reg_t sew = P.VU.vsew;
 
-  switch(sew) {
+  switch (sew) {
   case e8:
     P.VU.elt<uint8_t>(rd_num, 0, true) = RS1;
     break;
@@ -26,4 +26,4 @@ if (vl > 0 && P.VU.vstart->read() < vl) {
   vl = 0;
 }
 
-P.VU.vstart->write(0);
+VECTOR_END;

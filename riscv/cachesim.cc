@@ -74,9 +74,9 @@ cache_sim_t::cache_sim_t(const char* config, const char* name) : name(name)
 
 void cache_sim_t::init(const std::string eviction_policy)
 {
-  if(sets == 0 || (sets & (sets-1)))
+  if (sets == 0 || (sets & (sets-1)))
     help();
-  if(linesz < 8 || (linesz & (linesz-1)))
+  if (linesz < 8 || (linesz & (linesz-1)))
     help();
 
   tags.resize(sets);

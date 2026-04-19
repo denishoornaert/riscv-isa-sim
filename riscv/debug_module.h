@@ -2,28 +2,32 @@
 #ifndef _RISCV_DEBUG_MODULE_H
 #define _RISCV_DEBUG_MODULE_H
 
-#include <set>
+#include <array>
+#include <vector>
 
 #include "abstract_device.h"
-#include "mmu.h"
 
-class sim_t;
+class simif_t;
 class bus_t;
+class processor_t;
 
-typedef struct {
-    // Size of program_buffer in 32-bit words, as exposed to the rest of the
-    // world.
-    unsigned progbufsize;
-    unsigned max_sba_data_width;
-    bool require_authentication;
-    unsigned abstract_rti;
-    bool support_hasel;
-    bool support_abstract_csr_access;
-    bool support_haltgroups;
-    bool support_impebreak;
-} debug_module_config_t;
+struct debug_module_config_t {
+  // Size of program_buffer in 32-bit words, as exposed to the rest of the
+  // world.
+  unsigned progbufsize = 2;
+  unsigned datacount = 2;
+  unsigned max_sba_data_width = 0;
+  bool require_authentication = false;
+  unsigned abstract_rti = 0;
+  bool support_hasel = true;
+  bool support_abstract_csr_access = true;
+  bool support_abstract_fpr_access = true;
+  bool support_haltgroups = true;
+  bool support_impebreak = true;
+  bool support_abstractauto = true;
+};
 
-typedef struct {
+struct dmcontrol_t {
   bool haltreq;
   bool resumereq;
   bool hasel;
@@ -31,9 +35,9 @@ typedef struct {
   bool hartreset;
   bool dmactive;
   bool ndmreset;
-} dmcontrol_t;
+};
 
-typedef struct {
+struct dmstatus_t {
   bool impebreak;
   bool allhavereset;
   bool anyhavereset;
@@ -51,30 +55,30 @@ typedef struct {
   bool authbusy;
   bool cfgstrvalid;
   unsigned version;
-} dmstatus_t;
+};
 
-typedef enum cmderr {
-    CMDERR_NONE = 0,
-    CMDERR_BUSY = 1,
-    CMDERR_NOTSUP = 2,
-    CMDERR_EXCEPTION = 3,
-    CMDERR_HALTRESUME = 4,
-    CMDERR_OTHER = 7  
-} cmderr_t;
+enum cmderr_t {
+  CMDERR_NONE = 0,
+  CMDERR_BUSY = 1,
+  CMDERR_NOTSUP = 2,
+  CMDERR_EXCEPTION = 3,
+  CMDERR_HALTRESUME = 4,
+  CMDERR_OTHER = 7
+};
 
-typedef struct {
+struct abstractcs_t {
   bool busy;
   unsigned datacount;
   unsigned progbufsize;
   cmderr_t cmderr;
-} abstractcs_t;
+};
 
-typedef struct {
+struct abstractauto_t {
   unsigned autoexecprogbuf;
   unsigned autoexecdata;
-} abstractauto_t;
+};
 
-typedef struct {
+struct sbcs_t {
   unsigned version;
   bool readonaddr;
   unsigned sbaccess;
@@ -87,14 +91,22 @@ typedef struct {
   bool access32;
   bool access16;
   bool access8;
-} sbcs_t;
+  bool sbbusyerror;
+};
 
-typedef struct {
+struct hart_debug_state_t {
   bool halted;
   bool resumeack;
   bool havereset;
   uint8_t haltgroup;
-} hart_debug_state_t;
+};
+
+// structure to describe mmio region
+struct region_descriptor {
+  reg_t addr;           // 1st addr in a range
+  size_t len;           // range size
+  const uint8_t *bytes; // data
+};
 
 class debug_module_t : public abstract_device_t
 {
@@ -108,13 +120,12 @@ class debug_module_t : public abstract_device_t
      * abstract_rti is extra run-test/idle cycles that each abstract command
      * takes to execute. Useful for testing OpenOCD.
      */
-    debug_module_t(sim_t *sim, const debug_module_config_t &config);
+    debug_module_t(simif_t *sim, const debug_module_config_t &config);
     ~debug_module_t();
 
-    void add_device(bus_t *bus);
-
-    bool load(reg_t addr, size_t len, uint8_t* bytes);
-    bool store(reg_t addr, size_t len, const uint8_t* bytes);
+    bool load(reg_t addr, size_t len, uint8_t* bytes) override;
+    bool store(reg_t addr, size_t len, const uint8_t* bytes) override;
+    reg_t size() override;
 
     // Debug Module Interface that the debugger (in our case through JTAG DTM)
     // uses to access the DM.
@@ -129,8 +140,6 @@ class debug_module_t : public abstract_device_t
     void proc_reset(unsigned id);
 
   private:
-    static const unsigned datasize = 2;
-    unsigned nprocs;
     debug_module_config_t config;
     // Actual size of the program buffer, which is 1 word bigger than we let on
     // to implement the implicit ebreak at the end.
@@ -138,22 +147,19 @@ class debug_module_t : public abstract_device_t
     static const unsigned debug_data_start = 0x380;
     unsigned debug_progbuf_start;
 
-    static const unsigned debug_abstract_size = 12;
+    static const unsigned debug_abstract_size = 24;
     unsigned debug_abstract_start;
     // R/W this through custom registers, to allow debuggers to test that
     // functionality.
     unsigned custom_base;
 
-    // We only support 1024 harts currently. More requires at least resizing
-    // the arrays below, and their corresponding special memory regions.
-    unsigned hartsellen = 10;
-
-    sim_t *sim;
+    simif_t *sim;
 
     uint8_t debug_rom_whereto[4];
     uint8_t debug_abstract[debug_abstract_size * 4];
     uint8_t *program_buffer;
-    uint8_t dmdata[datasize * 4];
+    static constexpr unsigned dmdata_reg_size = 4;
+    std::vector<uint8_t> dmdata;
 
     std::vector<hart_debug_state_t> hart_state;
     uint8_t debug_rom_flags[1024];
@@ -162,9 +168,22 @@ class debug_module_t : public abstract_device_t
     uint32_t read32(uint8_t *rom, unsigned int index);
 
     void sb_autoincrement();
+
+    /* Start a system bus access. (It could be instantaneous, but to help test
+     * OpenOCD a delay can be added.) */
+    void sb_read_start();
+    void sb_write_start();
+
+    /* Actually read/write. */
     void sb_read();
     void sb_write();
+
+    /* Return true iff a system bus access is in progress. */
+    bool sb_busy() const;
+
     unsigned sb_access_bits();
+
+    uint8_t *get_dmdata_checked(size_t required_size);
 
     dmcontrol_t dmcontrol;
     dmstatus_t dmstatus;
@@ -181,13 +200,38 @@ class debug_module_t : public abstract_device_t
     uint32_t challenge;
     const uint32_t secret = 1;
 
-    processor_t *processor(unsigned hartid) const;
     bool hart_selected(unsigned hartid) const;
     void reset();
+
     bool perform_abstract_command();
+    bool perform_abstract_register_access();
+    bool perform_abstract_memory_access();
+
+    unsigned arg(unsigned xlen, unsigned i);
+
+    void handle_post_increment(size_t xlen, unsigned aamsize, unsigned &offset);
+    void handle_memory_read(size_t xlen, unsigned aamsize, unsigned &offset);
+    void handle_memory_write(size_t xlen, unsigned aamsize, unsigned &offset);
+
+    void generate_initial_sequence(bool aamvirtual, unsigned &offset);
+    void generate_termination_sequence(unsigned &offset);
+    void start_command_execution();
 
     bool abstract_command_completed;
     unsigned rti_remaining;
+
+    size_t selected_hart_id() const;
+    hart_debug_state_t& selected_hart_state();
+
+    /* Whether the first 2 harts are available is controllable through DMCUSTOM,
+     * where bit 0 corresponds to hart 0, etc. When a bit is one the hart
+     * available.  Otherwise it is unavailable. */
+    bool hart_available_state[2];
+    bool hart_available(unsigned hart_id) const;
+
+    unsigned sb_read_wait, sb_write_wait;
+
+    std::array<region_descriptor, 6> debug_memory_regions;
 };
 
 #endif

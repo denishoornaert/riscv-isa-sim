@@ -1,6 +1,5 @@
-// vmv1r.v vd, vs2
-require_vector_novtype(true, true);
-const reg_t baseAddr = RS1;
+// vmv<nf>r.v vd, vs2
+require_vector(true);
 const reg_t vd = insn.rd();
 const reg_t vs2 = insn.rs2();
 const reg_t len = insn.rs1() + 1;
@@ -25,4 +24,4 @@ if (vd != vs2 && start < size) {
   }
 }
 
-P.VU.vstart->write(0);
+VECTOR_END;

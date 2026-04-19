@@ -1,11 +1,13 @@
 // See LICENSE for license details.
 
+#include "config.h"
 #include "htif.h"
 #include "rfb.h"
 #include "elfloader.h"
 #include "platform.h"
 #include "byteorder.h"
 #include "trap.h"
+#include "../riscv/common.h"
 #include <algorithm>
 #include <assert.h>
 #include <vector>
@@ -18,6 +20,11 @@
 #include <unistd.h>
 #include <signal.h>
 #include <getopt.h>
+#include <libgen.h>
+#include <limits.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 /* Attempt to determine the execution prefix automatically.  autoconf
  * sets PREFIX, and pconfigure sets __PCONFIGURE__PREFIX. */
@@ -33,6 +40,10 @@
 # define TARGET_DIR "/" TARGET_ARCH "/bin/"
 #endif
 
+#ifndef PROC_SELF_EXE
+# define PROC_SELF_EXE "/proc/self/exe"
+#endif
+
 static volatile bool signal_exit = false;
 static void handle_signal(int sig)
 {
@@ -44,7 +55,7 @@ static void handle_signal(int sig)
 
 htif_t::htif_t()
   : mem(this), entry(DRAM_BASE), sig_addr(0), sig_len(0),
-    tohost_addr(0), fromhost_addr(0), exitcode(0), stopped(false),
+    tohost_addr(0), fromhost_addr(0), stopped(false),
     syscall_proxy(this)
 {
   signal(SIGINT, &handle_signal);
@@ -63,14 +74,14 @@ htif_t::htif_t(int argc, char** argv) : htif_t()
 htif_t::htif_t(const std::vector<std::string>& args) : htif_t()
 {
   int argc = args.size() + 1;
-  char * argv[argc];
+  std::vector<char*>argv(argc);
   argv[0] = (char *) "htif";
   for (unsigned int i = 0; i < args.size(); i++) {
     argv[i+1] = (char *) args[i].c_str();
   }
   //Set line size as 16 by default.
   line_size = 16;
-  parse_arguments(argc, argv);
+  parse_arguments(argc, &argv[0]);
   register_devices();
 }
 
@@ -82,10 +93,20 @@ htif_t::~htif_t()
 
 void htif_t::start()
 {
-  if (!targs.empty() && targs[0] != "none")
-      load_program();
-
-  reset();
+  if (!targs.empty()) {
+    if (targs[0] != "none") {
+      try {
+        load_program();
+      } catch (const incompat_xlen & err) {
+        fprintf(stderr, "Error: cannot execute %d-bit program on RV%d hart\n", err.actual_xlen, err.expected_xlen);
+        exit(1);
+      }
+      reset();
+    } else {
+      auto empty_symbols = std::map<std::string, uint64_t>();
+      load_symbols(empty_symbols);
+    }
+  }
 }
 
 static void bad_address(const std::string& situation, reg_t addr)
@@ -95,16 +116,37 @@ static void bad_address(const std::string& situation, reg_t addr)
   exit(-1);
 }
 
-std::map<std::string, uint64_t> htif_t::load_payload(const std::string& payload, reg_t* entry)
+static std::string get_prefix_from_arg0() {
+  char exe_path[PATH_MAX];
+#ifdef __APPLE__
+  uint32_t bufsize = PATH_MAX - 1;
+  ssize_t len = _NSGetExecutablePath(exe_path, &bufsize) == 0 ? bufsize : -1;
+#else
+  ssize_t len = readlink(PROC_SELF_EXE, exe_path, PATH_MAX - 1);
+#endif
+  if (len == -1)
+    return PREFIX;
+  exe_path[len] = '\0';
+  return std::string(dirname(exe_path)) + "/..";
+}
+
+std::map<std::string, uint64_t> htif_t::load_payload(const std::string& payload, reg_t* entry, reg_t load_offset)
 {
   std::string path;
   if (access(payload.c_str(), F_OK) == 0)
     path = payload;
   else if (payload.find('/') == std::string::npos)
   {
-    std::string test_path = PREFIX TARGET_DIR + payload;
+    std::string prefix = get_prefix_from_arg0();
+    std::string test_path = prefix + TARGET_DIR + payload;
     if (access(test_path.c_str(), F_OK) == 0)
       path = test_path;
+    else
+      throw std::runtime_error(
+        "could not open " + payload + "; searched paths:\n" +
+        "\t. (current directory)\n" +
+        "\t" + prefix + TARGET_DIR + " (based on configured --prefix and --with-target)"
+      );
   }
 
   if (path.empty())
@@ -129,16 +171,34 @@ std::map<std::string, uint64_t> htif_t::load_payload(const std::string& payload,
   } preload_aware_memif(this);
 
   try {
-    return load_elf(path.c_str(), &preload_aware_memif, entry);
+    return load_elf(path.c_str(), &preload_aware_memif, entry, load_offset, expected_xlen);
   } catch (mem_trap_t& t) {
     bad_address("loading payload " + payload, t.get_tval());
     abort();
   }
 }
 
-void htif_t::load_program()
+void htif_t::load_symbols(std::map<std::string, uint64_t>& symbols)
 {
-  std::map<std::string, uint64_t> symbols = load_payload(targs[0], &entry);
+  class nop_memif_t : public memif_t {
+   public:
+    nop_memif_t(htif_t* htif) : memif_t(htif) {}
+    void read(addr_t UNUSED addr, size_t UNUSED len, void UNUSED *bytes) override {}
+    void write(addr_t UNUSED taddr, size_t UNUSED len, const void UNUSED *src) override {}
+  } nop_memif(this);
+
+  reg_t nop_entry;
+  for (auto &s : symbol_elfs) {
+    std::map<std::string, uint64_t> other_symbols = load_elf(s.c_str(), &nop_memif, &nop_entry,
+                                                             expected_xlen);
+    symbols.merge(other_symbols);
+  }
+
+  // detect torture tests so we can print the memory signature at the end
+  if (symbols.count("begin_signature") && symbols.count("end_signature")) {
+    sig_addr = symbols["begin_signature"];
+    sig_len = symbols["end_signature"] - sig_addr;
+  }
 
   if (symbols.count("tohost") && symbols.count("fromhost")) {
     tohost_addr = symbols["tohost"];
@@ -147,27 +207,25 @@ void htif_t::load_program()
     fprintf(stderr, "warning: tohost and fromhost symbols not in ELF; can't communicate with target\n");
   }
 
-  // detect torture tests so we can print the memory signature at the end
-  if (symbols.count("begin_signature") && symbols.count("end_signature"))
-  {
-    sig_addr = symbols["begin_signature"];
-    sig_len = symbols["end_signature"] - sig_addr;
+  for (auto i : symbols) {
+    auto it = addr2symbol.find(i.second);
+    if ( it == addr2symbol.end())
+      addr2symbol[i.second] = i.first;
   }
+}
 
-  for (auto payload : payloads)
-  {
+void htif_t::load_program()
+{
+  std::map<std::string, uint64_t> symbols = load_payload(targs[0], &entry, load_offset);
+
+  load_symbols(symbols);
+
+  for (auto payload : payloads) {
     reg_t dummy_entry;
-    load_payload(payload, &dummy_entry);
+    load_payload(payload, &dummy_entry, 0);
   }
 
-   for (auto i : symbols)
-   {
-     auto it = addr2symbol.find(i.second);
-     if ( it == addr2symbol.end())
-       addr2symbol[i.second] = i.first;
-   }
-
-   return;
+  return;
 }
 
 const char* htif_t::get_symbol(uint64_t addr)
@@ -178,6 +236,14 @@ const char* htif_t::get_symbol(uint64_t addr)
       return nullptr;
 
   return it->second.c_str();
+}
+
+bool htif_t::should_exit() const {
+  return signal_exit || exitcode.has_value();
+}
+
+void htif_t::htif_exit(int exit_code) {
+  exitcode = exit_code;
 }
 
 void htif_t::stop()
@@ -209,11 +275,10 @@ void htif_t::stop()
 
 void htif_t::clear_chunk(addr_t taddr, size_t len)
 {
-  char zeros[chunk_max_size()];
-  memset(zeros, 0, chunk_max_size());
+  std::vector<uint8_t> zeros(chunk_max_size(), 0);
 
-  for (size_t pos = 0; pos < len; pos += chunk_max_size())
-    write_chunk(taddr + pos, std::min(len - pos, chunk_max_size()), zeros);
+  for (size_t pos = 0; pos < len; pos += zeros.size())
+    write_chunk(taddr + pos, std::min(len - pos, zeros.size()), &zeros[0]);
 }
 
 int htif_t::run()
@@ -226,11 +291,11 @@ int htif_t::run()
     std::bind(enq_func, &fromhost_queue, std::placeholders::_1);
 
   if (tohost_addr == 0) {
-    while (true)
+    while (!should_exit())
       idle();
   }
 
-  while (!signal_exit && exitcode == 0)
+  while (!should_exit())
   {
     uint64_t tohost;
 
@@ -278,7 +343,7 @@ bool htif_t::done()
 
 int htif_t::exit_code()
 {
-  return exitcode >> 1;
+  return exitcode.value_or(0) >> 1;
 }
 
 void htif_t::parse_arguments(int argc, char ** argv)
@@ -314,7 +379,12 @@ void htif_t::parse_arguments(int argc, char ** argv)
         break;
       case HTIF_LONG_OPTIONS_OPTIND + 5:
         line_size = atoi(optarg);
-
+        break;
+      case HTIF_LONG_OPTIONS_OPTIND + 6:
+        targs.push_back(optarg);
+        break;
+      case HTIF_LONG_OPTIONS_OPTIND + 7:
+        symbol_elfs.push_back(optarg);
         break;
       case '?':
         if (!opterr)
@@ -350,9 +420,17 @@ void htif_t::parse_arguments(int argc, char ** argv)
           c = HTIF_LONG_OPTIONS_OPTIND + 4;
           optarg = optarg + 9;
         }
-        else if(arg.find("+signature-granularity=")==0){
-            c = HTIF_LONG_OPTIONS_OPTIND + 5;
-            optarg = optarg + 23;
+        else if (arg.find("+signature-granularity=") == 0) {
+          c = HTIF_LONG_OPTIONS_OPTIND + 5;
+          optarg = optarg + 23;
+        }
+	else if (arg.find("+target-argument=") == 0) {
+	  c = HTIF_LONG_OPTIONS_OPTIND + 6;
+	  optarg = optarg + 17;
+	}
+        else if (arg.find("+symbol-elf=") == 0) {
+          c = HTIF_LONG_OPTIONS_OPTIND + 7;
+          optarg = optarg + 12;
         }
         else if (arg.find("+permissive-off") == 0) {
           if (opterr)

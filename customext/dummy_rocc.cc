@@ -5,14 +5,14 @@
 class dummy_rocc_t : public rocc_t
 {
  public:
-  const char* name() { return "dummy_rocc"; }
+  const char* name() const { return "dummy_rocc"; }
 
-  reg_t custom0(rocc_insn_t insn, reg_t xs1, reg_t xs2)
+  reg_t custom0(processor_t *p, rocc_insn_t insn, reg_t xs1, reg_t UNUSED xs2)
   {
     reg_t prev_acc = acc[insn.rs2];
 
     if (insn.rs2 >= num_acc)
-      illegal_instruction();
+      illegal_instruction(*p);
 
     switch (insn.funct)
     {
@@ -22,13 +22,13 @@ class dummy_rocc_t : public rocc_t
       case 1: // xd <- acc (the only real work is the return statement below)
         break;
       case 2: // acc[rs2] <- Mem[xs1]
-        acc[insn.rs2] = p->get_mmu()->load_uint64(xs1);
+        acc[insn.rs2] = p->get_mmu()->load<uint64_t>(xs1);
         break;
       case 3: // acc[rs2] <- accX + xs1
         acc[insn.rs2] += xs1;
         break;
       default:
-        illegal_instruction();
+        illegal_instruction(*p);
     }
 
     return prev_acc; // in all cases, xd <- previous value of acc[rs2]
@@ -44,4 +44,4 @@ class dummy_rocc_t : public rocc_t
   reg_t acc[num_acc];
 };
 
-REGISTER_EXTENSION(dummy_rocc, []() { return new dummy_rocc_t; })
+REGISTER_EXTENSION(dummy_rocc, []() { static dummy_rocc_t ext; return &ext; })
